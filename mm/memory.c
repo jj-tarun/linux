@@ -1728,7 +1728,7 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 	do {
 		next = pmd_addr_end(addr, end);
 		if (is_swap_pmd(*pmd) || pmd_trans_huge(*pmd) || pmd_devmap(*pmd)) {
-			if (next - addr != HPAGE_PMD_SIZE)
+			if (next - addr < HPAGE_PMD_SIZE)
 				__split_huge_pmd(vma, pmd, addr, false, NULL);
 			else if (zap_huge_pmd(tlb, vma, pmd, addr)) {
 				addr = next;
@@ -5659,12 +5659,17 @@ out_map:
 	return 0;
 }
 
-static inline vm_fault_t create_huge_pmd(struct vm_fault *vmf)
+static inline vm_fault_t try_create_huge_pmd(struct vm_fault *vmf)
 {
 	struct vm_area_struct *vma = vmf->vma;
+	vmf->orders = thp_vma_allowable_orders(vma, vma->vm_flags,
+						TVA_IN_PF | TVA_ENFORCE_SYSFS,
+						THP_ORDER_PMD_ANON);
+	if (!vmf->orders)
+		return VM_FAULT_FALLBACK;
 	if (vma_is_anonymous(vma))
 		return do_huge_pmd_anonymous_page(vmf);
-	if (vma->vm_ops->huge_fault)
+	if ((vmf->orders & PMD_ORDER) && vma->vm_ops->huge_fault)
 		return vma->vm_ops->huge_fault(vmf, PMD_ORDER);
 	return VM_FAULT_FALLBACK;
 }
@@ -5909,10 +5914,8 @@ retry_pud:
 	if (pud_trans_unstable(vmf.pud))
 		goto retry_pud;
 
-	if (pmd_none(*vmf.pmd) &&
-	    thp_vma_allowable_order(vma, vm_flags,
-				TVA_IN_PF | TVA_ENFORCE_SYSFS, PMD_ORDER)) {
-		ret = create_huge_pmd(&vmf);
+	if (pmd_none(*vmf.pmd)) {
+		ret = try_create_huge_pmd(&vmf);
 		if (!(ret & VM_FAULT_FALLBACK))
 			return ret;
 	} else {
